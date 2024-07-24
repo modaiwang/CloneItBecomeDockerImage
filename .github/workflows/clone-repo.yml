@@ -24,7 +24,7 @@ jobs:
       - name: Extract repos from issue body
         id: extract_repos
         run: |
-          REPOS=$(jq -r '.repos[]' <<< "${{ github.event.issue.body }}")
+          REPOS=$(jq -r '.repos[]' <<< '${{ github.event.issue.body }}')
           echo "REPOS=${REPOS}" >> $GITHUB_ENV
 
       - name: Print environment variables
