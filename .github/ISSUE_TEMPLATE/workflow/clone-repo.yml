@@ -1,0 +1,112 @@
+name: Clone and Package Repos
+
+on:
+  issue:
+    types: [opened, edited]
+
+jobs:
+  build:
+    if: contains(github.event.issue.labels.*.name, 'clone-repo')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      
+      - name: Install jq
+        run: sudo apt-get install -y jq  # 安装 jq 工具来解析 JSON
+
+      - name: Extract repos from issue body
+        id: extract_repos
+        run: |
+          REPOS=$(jq -r '.repos[]' <<< "${{ github.event.issue.body }}")
+          echo "REPOS=${REPOS}" >> $GITHUB_ENV
+
+      - name: Print environment variables
+        run: |
+          echo "REPOS=${REPOS}"  # 打印提取的仓库列表
+          echo "ALIYUN_REPO=${{ secrets.ALIYUN_REPO }}"  # 打印阿里云镜像仓库地址
+
+      - name: Clone repositories
+        run: |
+          mkdir -p repos
+          for REPO in $REPOS; do
+            REPO_NAME=$(basename $REPO .git)
+            git clone $REPO repos/$REPO_NAME
+          done
+
+      - name: Build Docker image
+        run: |
+          # 获取 issue 的 ID
+          ISSUE_ID=${{ github.event.issue.number }}
+          
+          # 创建一个最小的 Dockerfile 文件
+          echo 'FROM alpine:latest' > Dockerfile
+          echo 'COPY repos /app' >> Dockerfile
+          echo 'CMD ["sh"]' >> Dockerfile
+          
+          # 构建 Docker 镜像并标记
+          docker build -t my-repos-image-$ISSUE_ID:latest .
+          docker tag my-repos-image-$ISSUE_ID:latest ${{ secrets.ALIYUN_REPO }}/my-repos-image-$ISSUE_ID:latest
+
+      - name: Log in to Aliyun Docker Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.ALIYUN_REPO }}
+          username: ${{ secrets.ALIYUN_USERNAME }}
+          password: ${{ secrets.ALIYUN_PASSWORD }}
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.ALIYUN_REPO }}/my-repos-image-${{ github.event.issue.number }}:latest
+
+      - name: Comment on the issue
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issueComment = `
+            已经将所有指定的 GitHub 仓库克隆并打包成镜像。镜像路径如下：
+
+            - 镜像仓库地址: ${{ secrets.ALIYUN_REPO }}/my-repos-image-${{ github.event.issue.number }}:latest
+            `
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: issueComment
+            })
+      # 5. 当以上步骤成功时，为 issues 添加 success 标签
+      - name: Success issues
+        if: ${{ success() }}
+        uses: actions/github-script@v5
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['success']
+            })
+      # 6. 当以上步骤失败时，为 issues 添加 failure 标签，并为其添加失败原因评论
+      - name: Failure issues
+        if: ${{ failure() }}
+        uses: actions/github-script@v5
+        with:
+          script: |
+            github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['failure']
+            })
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "[下载失败](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            })
